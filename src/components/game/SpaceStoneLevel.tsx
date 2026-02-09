@@ -71,44 +71,95 @@ export const SpaceStoneLevel = ({ onComplete, onExit }: SpaceStoneLevelProps) =>
     setOutput([]);
     setStatus('idle');
 
-    try {
-      // Create a custom console.log
-      const logs: string[] = [];
-      const customConsole = {
-        log: (...args: any[]) => {
-          logs.push(args.map(a => JSON.stringify(a)).join(' '));
+    const TIMEOUT_MS = 5000;
+
+    // Build a sandboxed Web Worker that blocks access to globals
+    const workerCode = `
+      // Block dangerous globals
+      self.window = undefined;
+      self.document = undefined;
+      self.XMLHttpRequest = undefined;
+      self.fetch = undefined;
+      self.importScripts = undefined;
+      self.localStorage = undefined;
+      self.sessionStorage = undefined;
+      self.indexedDB = undefined;
+      self.openDatabase = undefined;
+      self.navigator = undefined;
+      self.location = undefined;
+
+      self.onmessage = function(e) {
+        var userCode = e.data.code;
+        var logs = [];
+        var customConsole = {
+          log: function() {
+            var args = Array.prototype.slice.call(arguments);
+            logs.push(args.map(function(a) { return JSON.stringify(a); }).join(' '));
+          }
+        };
+
+        try {
+          // Run user code
+          var fn = new Function('console', userCode);
+          fn(customConsole);
+
+          // Test the solution
+          var testFn = new Function('console', userCode + '\\nreturn calculateDistance({x: 0, y: 0}, {x: 3, y: 4});');
+          var result = testFn(customConsole);
+
+          self.postMessage({ logs: logs, result: result, error: null });
+        } catch (err) {
+          self.postMessage({ logs: logs, result: null, error: err.message });
         }
       };
+    `;
 
-      // Execute the code
-      const executeCode = new Function('console', code);
-      executeCode(customConsole);
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    const workerUrl = URL.createObjectURL(blob);
+    const worker = new Worker(workerUrl);
 
-      setOutput(logs);
-
-      // Check if solution is correct
-      const testFunction = new Function('console', `
-        ${code}
-        return calculateDistance({x: 0, y: 0}, {x: 3, y: 4});
-      `);
-      
-      const result = testFunction(customConsole);
-      
-      if (result === 5) {
-        setStatus('success');
-        // Collect the space stone
-        setStones(prev => prev.map(s => 
-          s.name === 'Space' ? { ...s, collected: true } : s
-        ));
-      } else {
-        setStatus('error');
-      }
-    } catch (error: any) {
-      setOutput([`Error: ${error.message}`]);
+    const timeout = setTimeout(() => {
+      worker.terminate();
+      URL.revokeObjectURL(workerUrl);
+      setOutput(['Error: Code execution timed out (5s limit)']);
       setStatus('error');
-    }
+      setIsRunning(false);
+    }, TIMEOUT_MS);
 
-    setIsRunning(false);
+    worker.onmessage = (e) => {
+      clearTimeout(timeout);
+      worker.terminate();
+      URL.revokeObjectURL(workerUrl);
+
+      const { logs, result, error } = e.data;
+
+      if (error) {
+        setOutput([...logs, `Error: ${error}`]);
+        setStatus('error');
+      } else {
+        setOutput(logs);
+        if (result === 5) {
+          setStatus('success');
+          setStones(prev => prev.map(s =>
+            s.name === 'Space' ? { ...s, collected: true } : s
+          ));
+        } else {
+          setStatus('error');
+        }
+      }
+      setIsRunning(false);
+    };
+
+    worker.onerror = (e) => {
+      clearTimeout(timeout);
+      worker.terminate();
+      URL.revokeObjectURL(workerUrl);
+      setOutput([`Error: ${e.message || 'Execution failed'}`]);
+      setStatus('error');
+      setIsRunning(false);
+    };
+
+    worker.postMessage({ code });
   };
 
   const showNextHint = () => {
