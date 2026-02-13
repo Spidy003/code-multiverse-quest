@@ -1,19 +1,19 @@
 import { motion } from 'framer-motion';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { HudPanel } from '../hud/HudPanel';
 import { HudButton } from '../hud/HudButton';
 import { GauntletProgress, defaultStones } from './GauntletProgress';
-import { Play, AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
+import { Play, AlertTriangle, CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import { ProgrammingLanguage } from './LanguageSelection';
 
 interface Challenge {
   id: string;
   title: string;
   description: string;
   instructions: string[];
-  starterCode: string;
-  solution: string;
+  starterCode: Record<ProgrammingLanguage, string>;
   hints: string[];
-  testCases: { input: string; expected: string }[];
+  testExpected: number;
 }
 
 const spaceStoneChallenge: Challenge = {
@@ -22,11 +22,12 @@ const spaceStoneChallenge: Challenge = {
   description: 'The Space Stone\'s coordinates are fluctuating. Write a function to calculate the distance between two points in space.',
   instructions: [
     'Create a function called calculateDistance',
-    'It should accept two points: {x, y} and {x, y}',
+    'It should accept two points with x,y coordinates',
     'Return the Euclidean distance between them',
     'Round the result to 2 decimal places'
   ],
-  starterCode: `// Calculate the distance between two points in space
+  starterCode: {
+    javascript: `// Calculate the distance between two points in space
 function calculateDistance(point1, point2) {
   // Your code here
   
@@ -35,47 +36,74 @@ function calculateDistance(point1, point2) {
 // Test your function
 const result = calculateDistance({x: 0, y: 0}, {x: 3, y: 4});
 console.log(result); // Should output: 5`,
-  solution: `function calculateDistance(point1, point2) {
-  const dx = point2.x - point1.x;
-  const dy = point2.y - point1.y;
-  return Math.round(Math.sqrt(dx * dx + dy * dy) * 100) / 100;
-}`,
+
+    python: `import math
+
+# Calculate the distance between two points in space
+def calculate_distance(point1, point2):
+    # Your code here
+    pass
+
+# Test your function
+result = calculate_distance({"x": 0, "y": 0}, {"x": 3, "y": 4})
+print(result)  # Should output: 5`,
+
+    java: `public class Solution {
+    // Calculate the distance between two points in space
+    public static double calculateDistance(int x1, int y1, int x2, int y2) {
+        // Your code here
+        return 0;
+    }
+
+    public static void main(String[] args) {
+        double result = calculateDistance(0, 0, 3, 4);
+        System.out.println(result); // Should output: 5.0
+    }
+}`
+  },
   hints: [
     'Remember the Pythagorean theorem: a² + b² = c²',
-    'Use Math.sqrt() for square root',
-    'Use Math.round() or toFixed() for rounding'
+    'Use Math.sqrt() / math.sqrt() for square root',
+    'Use rounding to get clean results'
   ],
-  testCases: [
-    { input: '({x: 0, y: 0}, {x: 3, y: 4})', expected: '5' },
-    { input: '({x: 1, y: 1}, {x: 4, y: 5})', expected: '5' },
-    { input: '({x: 0, y: 0}, {x: 1, y: 1})', expected: '1.41' }
-  ]
+  testExpected: 5,
 };
 
-interface SpaceStoneLevelProps {
-  onComplete: () => void;
-  onExit: () => void;
+// Piston API for Python and Java execution
+const PISTON_API = 'https://emkc.org/api/v2/piston/execute';
+
+const languageRuntime: Record<ProgrammingLanguage, { language: string; version: string }> = {
+  javascript: { language: 'javascript', version: '18.15.0' },
+  python: { language: 'python', version: '3.10.0' },
+  java: { language: 'java', version: '15.0.2' },
+};
+
+async function executeWithPiston(code: string, lang: ProgrammingLanguage): Promise<{ stdout: string; stderr: string }> {
+  const runtime = languageRuntime[lang];
+  const response = await fetch(PISTON_API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      language: runtime.language,
+      version: runtime.version,
+      files: [{ name: lang === 'java' ? 'Solution.java' : `main.${lang === 'python' ? 'py' : 'js'}`, content: code }],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Execution service returned ${response.status}`);
+  }
+
+  const data = await response.json();
+  const run = data.run || {};
+  return { stdout: run.stdout || '', stderr: run.stderr || '' };
 }
 
-export const SpaceStoneLevel = ({ onComplete, onExit }: SpaceStoneLevelProps) => {
-  const [code, setCode] = useState(spaceStoneChallenge.starterCode);
-  const [output, setOutput] = useState<string[]>([]);
-  const [isRunning, setIsRunning] = useState(false);
-  const [showHint, setShowHint] = useState(false);
-  const [currentHint, setCurrentHint] = useState(0);
-  const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
-  const [stones, setStones] = useState(defaultStones);
-
-  const runCode = () => {
-    setIsRunning(true);
-    setOutput([]);
-    setStatus('idle');
-
+function executeJsInWorker(code: string): Promise<{ logs: string[]; result: unknown; error: string | null }> {
+  return new Promise((resolve) => {
     const TIMEOUT_MS = 5000;
 
-    // Build a sandboxed Web Worker that blocks access to globals
     const workerCode = `
-      // Block dangerous globals
       self.window = undefined;
       self.document = undefined;
       self.XMLHttpRequest = undefined;
@@ -97,16 +125,11 @@ export const SpaceStoneLevel = ({ onComplete, onExit }: SpaceStoneLevelProps) =>
             logs.push(args.map(function(a) { return JSON.stringify(a); }).join(' '));
           }
         };
-
         try {
-          // Run user code
           var fn = new Function('console', userCode);
           fn(customConsole);
-
-          // Test the solution
           var testFn = new Function('console', userCode + '\\nreturn calculateDistance({x: 0, y: 0}, {x: 3, y: 4});');
           var result = testFn(customConsole);
-
           self.postMessage({ logs: logs, result: result, error: null });
         } catch (err) {
           self.postMessage({ logs: logs, result: null, error: err.message });
@@ -121,45 +144,99 @@ export const SpaceStoneLevel = ({ onComplete, onExit }: SpaceStoneLevelProps) =>
     const timeout = setTimeout(() => {
       worker.terminate();
       URL.revokeObjectURL(workerUrl);
-      setOutput(['Error: Code execution timed out (5s limit)']);
-      setStatus('error');
-      setIsRunning(false);
+      resolve({ logs: ['Error: Code execution timed out (5s limit)'], result: null, error: 'timeout' });
     }, TIMEOUT_MS);
 
     worker.onmessage = (e) => {
       clearTimeout(timeout);
       worker.terminate();
       URL.revokeObjectURL(workerUrl);
-
-      const { logs, result, error } = e.data;
-
-      if (error) {
-        setOutput([...logs, `Error: ${error}`]);
-        setStatus('error');
-      } else {
-        setOutput(logs);
-        if (result === 5) {
-          setStatus('success');
-          setStones(prev => prev.map(s =>
-            s.name === 'Space' ? { ...s, collected: true } : s
-          ));
-        } else {
-          setStatus('error');
-        }
-      }
-      setIsRunning(false);
+      resolve(e.data);
     };
 
     worker.onerror = (e) => {
       clearTimeout(timeout);
       worker.terminate();
       URL.revokeObjectURL(workerUrl);
-      setOutput([`Error: ${e.message || 'Execution failed'}`]);
-      setStatus('error');
-      setIsRunning(false);
+      resolve({ logs: [], result: null, error: e.message || 'Execution failed' });
     };
 
     worker.postMessage({ code });
+  });
+}
+
+interface SpaceStoneLevelProps {
+  onComplete: () => void;
+  onExit: () => void;
+  language: ProgrammingLanguage;
+}
+
+export const SpaceStoneLevel = ({ onComplete, onExit, language }: SpaceStoneLevelProps) => {
+  const [code, setCode] = useState(spaceStoneChallenge.starterCode[language]);
+  const [output, setOutput] = useState<string[]>([]);
+  const [isRunning, setIsRunning] = useState(false);
+  const [showHint, setShowHint] = useState(false);
+  const [currentHint, setCurrentHint] = useState(0);
+  const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [stones, setStones] = useState(defaultStones);
+
+  const runCode = async () => {
+    setIsRunning(true);
+    setOutput([]);
+    setStatus('idle');
+
+    try {
+      if (language === 'javascript') {
+        // Use sandboxed Web Worker for JS
+        const { logs, result, error } = await executeJsInWorker(code);
+
+        if (error) {
+          setOutput([...logs, `Error: ${error}`]);
+          setStatus('error');
+        } else {
+          setOutput(logs);
+          if (result === 5) {
+            setStatus('success');
+            setStones(prev => prev.map(s => s.name === 'Space' ? { ...s, collected: true } : s));
+          } else {
+            setStatus('error');
+          }
+        }
+      } else {
+        // Use Piston API for Python and Java
+        const { stdout, stderr } = await executeWithPiston(code, language);
+
+        const outputLines: string[] = [];
+
+        if (stdout.trim()) {
+          outputLines.push(...stdout.trim().split('\n'));
+        }
+
+        if (stderr.trim()) {
+          outputLines.push(...stderr.trim().split('\n').map(l => `Error: ${l}`));
+          setOutput(outputLines);
+          setStatus('error');
+        } else {
+          setOutput(outputLines);
+
+          // Check result from stdout
+          const lastLine = stdout.trim().split('\n').pop()?.trim() || '';
+          const numericResult = parseFloat(lastLine);
+
+          if (numericResult === 5 || numericResult === 5.0) {
+            setStatus('success');
+            setStones(prev => prev.map(s => s.name === 'Space' ? { ...s, collected: true } : s));
+          } else {
+            setStatus('error');
+          }
+        }
+      }
+    } catch (err: any) {
+      setOutput([`Error: ${err.message || 'Execution failed. Check your connection.'}`]);
+      setStatus('error');
+    }
+
+    setIsRunning(false);
   };
 
   const showNextHint = () => {
@@ -168,6 +245,8 @@ export const SpaceStoneLevel = ({ onComplete, onExit }: SpaceStoneLevelProps) =>
       setCurrentHint(prev => prev + 1);
     }
   };
+
+  const langLabel = language === 'javascript' ? 'JavaScript' : language === 'python' ? 'Python' : 'Java';
 
   return (
     <div className="min-h-screen bg-background">
@@ -180,6 +259,7 @@ export const SpaceStoneLevel = ({ onComplete, onExit }: SpaceStoneLevelProps) =>
             </HudButton>
             <div className="w-px h-6 bg-primary/20" />
             <span className="text-sm text-muted-foreground">LEVEL 1</span>
+            <span className="text-xs px-2 py-0.5 rounded bg-primary/20 text-primary uppercase tracking-wider">{langLabel}</span>
           </div>
           
           <GauntletProgress stones={stones} />
@@ -263,7 +343,7 @@ export const SpaceStoneLevel = ({ onComplete, onExit }: SpaceStoneLevelProps) =>
             <HudPanel className="p-4 flex-1">
               <div className="flex items-center justify-between mb-3">
                 <span className="text-xs text-muted-foreground uppercase tracking-wider">
-                  Code Editor
+                  Code Editor — {langLabel}
                 </span>
                 <HudButton 
                   variant="primary" 
@@ -271,8 +351,8 @@ export const SpaceStoneLevel = ({ onComplete, onExit }: SpaceStoneLevelProps) =>
                   onClick={runCode}
                   disabled={isRunning}
                 >
-                  <Play size={14} />
-                  Run Code
+                  {isRunning ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+                  {isRunning ? 'Running...' : 'Run Code'}
                 </HudButton>
               </div>
               
@@ -300,10 +380,12 @@ export const SpaceStoneLevel = ({ onComplete, onExit }: SpaceStoneLevelProps) =>
               
               <div className="font-mono text-sm space-y-1 min-h-[80px] max-h-32 overflow-auto">
                 {output.length === 0 ? (
-                  <span className="text-muted-foreground">Run your code to see output...</span>
+                  <span className="text-muted-foreground">
+                    {isRunning ? 'Executing code...' : 'Run your code to see output...'}
+                  </span>
                 ) : (
                   output.map((line, i) => (
-                    <div key={i} className={status === 'error' ? 'text-destructive' : 'text-foreground'}>
+                    <div key={i} className={line.startsWith('Error:') ? 'text-destructive' : 'text-foreground'}>
                       {line}
                     </div>
                   ))

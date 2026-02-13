@@ -80,10 +80,11 @@ const Index = () => {
 
       {/* Game Level */}
       <AnimatePresence>
-        {gameState === 'playing' && (
+        {gameState === 'playing' && selectedLanguage && (
           <SpaceStoneLevel 
             onComplete={handleLevelComplete}
             onExit={() => setGameState('language-select')}
+            language={selectedLanguage}
           />
         )}
       </AnimatePresence>
