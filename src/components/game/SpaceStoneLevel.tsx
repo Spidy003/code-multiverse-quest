@@ -204,7 +204,26 @@ export const SpaceStoneLevel = ({ onComplete, onExit, language }: SpaceStoneLeve
         }
       } else {
         // Use Piston API for Python and Java
-        const { stdout, stderr } = await executeWithPiston(code, language);
+        // Append test code if user hasn't included it
+        let fullCode = code;
+        if (language === 'python') {
+          const hasTestCall = /calculate_distance\s*\(/.test(code) && /print\s*\(/.test(code);
+          if (!hasTestCall) {
+            fullCode += `\n\n# Auto-appended test\nresult = calculate_distance({"x": 0, "y": 0}, {"x": 3, "y": 4})\nprint(result)`;
+          }
+          // Also support camelCase function name
+          const hasCamelTest = /calculateDistance\s*\(/.test(code) && /print\s*\(/.test(code);
+          if (!hasTestCall && !hasCamelTest && /calculateDistance/.test(code)) {
+            fullCode = code + `\n\n# Auto-appended test\nresult = calculateDistance({"x": 0, "y": 0}, {"x": 3, "y": 4})\nprint(result)`;
+          }
+        } else if (language === 'java') {
+          // Java starter already includes main method, only append if missing
+          if (!/public\s+static\s+void\s+main/.test(code)) {
+            fullCode = `public class Solution {\n${code}\n\n    public static void main(String[] args) {\n        double result = calculateDistance(0, 0, 3, 4);\n        System.out.println(result);\n    }\n}`;
+          }
+        }
+
+        const { stdout, stderr } = await executeWithPiston(fullCode, language);
 
         const outputLines: string[] = [];
 
@@ -215,6 +234,9 @@ export const SpaceStoneLevel = ({ onComplete, onExit, language }: SpaceStoneLeve
         if (stderr.trim()) {
           outputLines.push(...stderr.trim().split('\n').map(l => `Error: ${l}`));
           setOutput(outputLines);
+          setStatus('error');
+        } else if (outputLines.length === 0) {
+          setOutput(['Code executed but produced no output. Make sure to print your result.']);
           setStatus('error');
         } else {
           setOutput(outputLines);
